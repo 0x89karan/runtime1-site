@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>runtime1 — the verification thesis</title>
+<meta name="description" content="Verifiable agent governance: native real-time enforcement, cryptographic evidence, custody anchoring, and zero-knowledge replay proofs — with an honest account of what each proves.">
+<link rel="stylesheet" href="style.css">
+<script>try{var t=localStorage.getItem('runtime1-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<div class="progress"><span></span></div>
+<header class="topbar">
+  <nav class="nav">
+    <span class="brand"><a href="index.html" style="color:inherit">runtime<b>1</b></a></span>
+    <div class="links">
+      <a href="thesis.html">Thesis</a>
+      <a href="zk-verification.html" class="here">Verification</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="roadmap.html">Roadmap</a>
+      <a href="whitepaper.html">Whitepaper</a>
+      <span class="soon" title="the repository is not public yet">GitHub<em>soon</em></span>
+    </div>
+    <div class="tools">
+      <button type="button" class="keyhint" data-help aria-label="Keyboard shortcuts"><kbd>?</kbd></button>
+      <button type="button" class="tt" data-theme-toggle aria-pressed="false" title="Switch to light (t)">
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>
+        <span class="tt-label">dark</span>
+      </button>
+    </div>
+  </nav>
+</header>
+
+<div class="wrap doc">
+
+
+  <p class="eyebrow">thesis 2 · the evidence</p>
+  <h1>Enforce in real time. Prove it after the fact. Say exactly what the proof means.</h1>
+  <p class="lead">
+    runtime1's verification pipeline splits agent governance into two halves with very
+    different physics: enforcement, which <b>agentd</b> does natively and instantaneously,
+    and evidence, which must be cryptographic and checkable by someone who doesn't trust you.
+    Confusing the two is how this space overclaims — so we don't.
+  </p>
+
+  <h2>The two-pipeline architecture</h2>
+  <p>
+    Proving a policy decision in a zkVM takes seconds; an agent runtime makes thousands of
+    tool and model calls a day. Putting cryptography in the authorization path would be a
+    denial-of-service against the runtime itself. So the pipelines are separated — agentd
+    enforces, and the verification pipeline proves:
+  </p>
+  <pre>
+  agentd ENFORCEMENT (hot path, microseconds)            EVIDENCE PIPELINE (post-hoc, crypto)
+  ┌───────────────────────────────────────┐            ┌─────────────────────────────────────┐
+  │ agent requests action                 │            │ every decision → append-only log    │
+  │   → capability check                  │  journals  │   Ed25519 hash chain, rotated       │
+  │   → budget admission (rolling window) │ ─────────▶ │   segments, offline verifier        │
+  │   → approval gate (if risky)          │            │ + witness cosignature, independent  │
+  │   → credential broker executes        │            │ + zkVM interval proofs (private)    │
+  │ allow / deny — in real time           │            │ verified in milliseconds, by others │
+  └───────────────────────────────────────┘            └─────────────────────────────────────┘
+  </pre>
+  <p class="mut">
+    The prover never sits in front of an action, never lives inside <code>agentd</code> (the
+    ~2&nbsp;MB PID-1 runtime), and never becomes a reason an agent can't act. Enforcement is code that already
+    runs; evidence is a record that already exists, progressively hardened until a stranger
+    can check it.
+  </p>
+
+  <h2>What exists today <span class="badge enf">shipped</span></h2>
+  <ul>
+    <li><b>The signed receipt chain.</b> Model calls — allowed <em>and denied</em> — are
+      receipted into <code>evidence.jsonl</code>: hash-chained, Ed25519-signed, rotated in
+      independently verifiable segments, resumable after crashes.</li>
+    <li><b>An offline verifier.</b> <code>agentctl verify</code> checks a segment against a
+      public key with no runtime, no network, no trust in the box that produced it.</li>
+    <li><b>The complete action record.</b> Every tool call, capability verdict, approval,
+      cancel, and budget decision lands in the flight recorder — the raw material the
+      evidence pipeline progressively signs.</li>
+    <li><b>A signed decision journal, in production.</b> Every admission decision — allow,
+      defer, deny — is a canonical record with its inputs declared, in an append-only
+      Ed25519-signed hash chain. Recording against a real inbox, not a fixture.</li>
+    <li><b>Replay, inclusion proofs, and a verifier the buyer runs.</b>
+      <code>agentctl replay</code> re-derives every recorded verdict from the journal's own
+      hash-verified inputs; <code>agentctl prove</code> emits a Merkle path checkable offline
+      with nothing but a public key; <code>agentos-verifier</code> is a separate narrow binary
+      with no scheduler and no network runtime.</li>
+    <li><b>An independent witness.</b> A second party, holding its own key, replays the leaves
+      since the head it last saw and cosigns only if the new head append-only-extends it — the
+      first check here that does not rest on a key the audited party holds.</li>
+    <li><b>A zero-knowledge proof over real records.</b> A zkVM guest proves an interval is
+      contiguous, chain-linked, input-bound and verdict-consistent, with the records as private
+      witness. It has run over the production journal; the timings are published.</li>
+    <li><b>A public account of the limits.</b> Our threat model states, in writing, what this
+      chain does <em>not</em> prove: the signing key lives on the audited host, and deletion
+      seams between rotated segments are not detectable from the chain alone. It is the most
+      load-bearing paragraph in the repo, and it is written down rather than glossed over.</li>
+  </ul>
+
+  <h2>See it happen <span class="badge enf">shipped mechanics</span></h2>
+  <p class="mut">
+    A faithful miniature of the two rows above: the same event kinds, a hash-chained-then-signed
+    construction, and the check an outside verifier actually runs. Once the chain is signed, try
+    removing an action on the left — that's the one property a hash chain exists to guarantee.
+  </p>
+
+  <div class="vd-grid" data-verify-demo>
+    <div class="rec vd-col">
+      <div class="rec-hd">
+        <span class="gn">1</span>
+        <span class="dot" aria-hidden="true"></span>
+        <span class="file">flight.jsonl · agent=cos-inbox</span>
+        <div class="rec-ctl"><button type="button" data-vd-replay>↻ replay</button></div>
+      </div>
+      <div class="rec-log vd-log" data-vd-actions role="log" aria-live="off" aria-label="Agent actions"></div>
+      <p class="rec-out vd-note" data-vd-hint>recording…</p>
+    </div>
+
+    <div class="rec vd-col">
+      <div class="rec-hd">
+        <span class="gn">2</span>
+        <span class="file">proof generation</span>
+      </div>
+      <div class="rec-log vd-log" data-vd-proof role="log" aria-live="off" aria-label="Proof generation steps"></div>
+      <p class="rec-out vd-note" data-vd-artifact>waiting for the run to finish…</p>
+    </div>
+
+    <div class="rec vd-col">
+      <div class="rec-hd">
+        <span class="gn">3</span>
+        <span class="file">verification — external auditor</span>
+      </div>
+      <div class="rec-log vd-log" data-vd-verify role="log" aria-live="off" aria-label="Verification steps"></div>
+      <p class="rec-out vd-note" data-vd-verdict>waiting for a proof…</p>
+    </div>
+  </div>
+  <p class="rec-cap">Illustrative hashing, not the real primitive — the shipped chain is SHA-256
+  linked and Ed25519-signed; this shows the shape of the check, not the cipher. Everything else
+  is faithful: an action removed after signing changes the recomputed root, the signed root
+  doesn't move, and the mismatch is exactly what <code>agentctl verify</code> would catch.</p>
+
+  <h2>The honest core: what evidence can and cannot say</h2>
+  <div class="two">
+    <div class="callout green">
+      <p class="k">what cryptography can prove</p>
+      <p><b>Integrity:</b> the published log was not modified or reordered after writing.</p>
+      <p><b>Rewind detection</b> (with anchoring): records that were journaled and anchored
+      cannot be silently deleted or rewritten later.</p>
+      <p><b>Policy consistency</b> (with zk replay): every decision in the published log
+      re-evaluates to the same verdict under the committed policy — without revealing the
+      policy.</p>
+    </div>
+    <div class="callout red">
+      <p class="k">what no signature or proof can say</p>
+      <p><b>Completeness.</b> An action that was never journaled produces no gap. Cryptography
+      over a log inherits the log; "every action was recorded" is a property of the
+      <em>boundary</em>, not of any proof over its output.</p>
+      <p>Closing that seam structurally takes hardware attestation with credentials sealed
+      inside the attested boundary — sketched in the roadmap for multi-machine setups, and
+      scoped honestly to brokered actions if it ever lands.</p>
+    </div>
+  </div>
+  <p class="mut">
+    Our claim discipline is binding across docs, demos, and this site: we say
+    <em>"policy-consistency of the published, custody-anchored log"</em> — never "proof of
+    enforcement," never "mathematical certainty that all policies were enforced." A proof
+    artifact that looks like certainty while quietly carrying an omission seam is worse than
+    no cryptography at all, because it teaches your auditor to stop asking the right question.
+  </p>
+
+  <h2>The verification ladder</h2>
+  <p class="mut">Each rung is a separate, independently shippable increment. Order matters:
+  the proof lands on top of auditor-grade evidence, never ahead of it. Ten rungs are built;
+  every one of them is checkable by running something rather than by reading this page.</p>
+  <table>
+    <thead><tr><th>Rung</th><th>What it adds</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>A2a</code></td>
+        <td><b>One policy artifact.</b> Capability matching, budget admission and tier legality
+        live in a single pure crate consumed by <em>both</em> the live enforcement path and every
+        verifier — so the policy that is proven is the policy that is enforced. The honest form of
+        the claim is one <em>source</em>, two compilations, with drift pinned by differential
+        fixtures.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>C1</code></td>
+        <td><b>The decision journal, in production.</b> Every admission decision becomes a
+        canonical record — inputs declared, verdict recorded — in an append-only Ed25519-signed
+        hash chain. Not a test fixture: it has been recording against a real inbox since
+        v0.134.0.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>C2</code></td>
+        <td><b>Coverage beyond model calls.</b> Agent creation — spawn, run-job, and scheduled
+        dispatch — records allow/defer/deny at its own journal site. The increment's own premise
+        was falsified before any code was written: the paths it originally targeted were dead in
+        the reference deployment, and the live one had no coverage at all.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>A3a-ii</code></td>
+        <td><b>Native replay.</b> <code>agentctl replay</code> re-derives every recorded verdict
+        from the journal's own hash-verified inputs and reports divergence. The exact statement a
+        proof later makes, checked first at native speed, for free.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>A3b</code></td>
+        <td><b>The declared inputs become recomputable.</b> Replay proves a verdict follows from
+        its declared inputs; it does not prove those inputs were true. Four new journal sites
+        mirror every real mutation of the spend counters, so a verifier folds them forward
+        independently.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>C3</code></td>
+        <td><b>Inclusion proofs.</b> A compact Merkle path against the journal's MMR that a third
+        party checks <em>offline</em> — no journal access, no network, nothing but the proof file
+        and a public key.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>D1</code> / <code>D2</code></td>
+        <td><b>Per-tenant identity, and a verifier the buyer runs.</b> Tenant identity moves onto
+        the journal itself so a proof says which tenant it belongs to. <code>agentos-verifier</code>
+        is a separate narrow binary that links no scheduler, no TUI and no network runtime — the
+        thing a security team actually runs in its own environment.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>C4</code></td>
+        <td><b>The log stops being self-attested.</b> A second, independently keyed witness
+        replays the leaves added since the head it last saw and cosigns only if the new head
+        append-only-extends it. Every check before this one rested on a key the audited party
+        holds. Walked live against the production journal for 27 cycles.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>D3.0</code></td>
+        <td><b>Measure before claiming.</b> A cost harness, deliberately outside the runtime's
+        dependency graph, whose exit criterion was binary and published before the number was
+        known. It also produced the correction that the batch size is <em>measured</em>, never
+        chosen.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>D3a</code></td>
+        <td><b>A zero-knowledge proof over real records.</b> A zkVM guest takes a journal interval
+        as private advice and proves, over it: the records are contiguous from the committed
+        start, their hash chain links, their declared observations bind to their own decoded
+        inputs, and each recorded verdict is what the shared policy crate re-derives. The records
+        stay private; two MMR roots, a four-way tally and the identity fields go public. It has
+        run over real records from the production journal.</td>
+        <td><span class="badge enf">shipped</span></td>
+      </tr>
+      <tr>
+        <td><code>D3b</code></td>
+        <td><b>Chaining.</b> A proof today covers one interval. Chaining them so they provably
+        span a whole committed range — and binding the endpoints to witness-cosigned heads rather
+        than journal-signed ones — is what turns this from authorship into third-party
+        evidence.</td>
+        <td><span class="badge next">next</span></td>
+      </tr>
+      <tr>
+        <td><code>C5</code></td>
+        <td><b>Signed action log.</b> Coverage extends from decisions to actions. A decision is
+        what the runtime concluded; an action is what it then did.</td>
+        <td><span class="badge road">roadmap</span></td>
+      </tr>
+      <tr>
+        <td><code>—</code></td>
+        <td><b>Verification at scale.</b> A sweep across many agents on many machines, checking
+        packets, proofs and anchors, alerting on gaps against an expected-batch registry. The
+        interesting case is when no human can read every log.</td>
+        <td><span class="badge road">roadmap</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Why zero-knowledge, specifically</h2>
+  <p>
+    One property in this space is unique to zk and impossible any other way: <b>a verifier who
+    must check policy compliance without ever seeing the policy.</b> The rules themselves —
+    which senders can trigger actions, what spend is normal, which systems an agent may touch —
+    can be sensitive. The zk replay proof lets an outside party confirm that a set of published
+    decision logs is consistent with the committed policy while learning nothing about the rules
+    or payloads beyond the commitments themselves.
+  </p>
+  <p class="mut">
+    The boundary of that story matters just as much, and one axis of it flipped during the
+    build. The original design put records public and the policy private; the shipped one is the
+    other way round, because the runtime already publishes its ceilings and a budget is
+    recoverable by binary-searching the verdict flip regardless. So the honest statement is
+    <b>records private, policy public</b>: the interval's records are the private witness, and
+    what goes public is two MMR roots, a four-way tally and the identity fields.
+    When the verifier <em>is</em> the policy owner, native replay still gives the same assurance
+    for free — the proof earns its keep when the records themselves must not be shown.
+    And a proof over a log inherits the log's completeness limits, which is why the ladder
+    puts coverage, custody, and the trust root first. The economics hold because proofs are
+    batched over an interval rather than per action: measured on this project's own hardware,
+    seconds to prove and <b>~0.17&nbsp;s to verify</b>, with verification time flat across
+    interval sizes.
+  </p>
+
+  <div class="callout purple">
+    <p class="k">design rules the ladder cannot break</p>
+    <p>1 — The prover is a separate binary. zkVM dependency trees never enter
+    <code>agentd</code> or its PID-1 boot path; the ~2&nbsp;MB footprint and its CI guard are
+    untouched.</p>
+    <p>2 — One compiled policy artifact serves enforcement and proving. Dual compilation of
+    "the same" policy is how the proven policy silently drifts from the enforced one.</p>
+    <p>3 — A missing proof is loud. Prover down means a visible, signed gap record in the
+    packet — enforcement is native and unaffected, and an outage is never silently absorbed.</p>
+    <p>4 — Every claim names its seam. Integrity, rewind detection, and policy consistency
+    are provable; completeness is a boundary property; we label which is which everywhere.</p>
+  </div>
+
+  <h2>The proof, illustrated <span class="badge enf">shipped · this is a miniature</span></h2>
+  <p class="mut">
+    The real thing runs in a zkVM and takes seconds; this is a faithful miniature of what it
+    proves that the hash chain above cannot — <em>policy consistency</em> rather than integrity,
+    checked by a verifier who never sees the records, only the roots and a tally.
+    Flip a verdict on the left after the proof is generated, the same way you removed a receipt
+    above, and watch the same class of failure show up for a different reason.
+    For the real numbers from a real journal, see the
+    <span class="soon-inline" title="not public yet">test runs<em>soon</em></span>.
+  </p>
+
+  <div class="vd-grid vd-grid--zk" data-zk-demo>
+    <div class="rec vd-col">
+      <div class="rec-hd">
+        <span class="gn">1</span>
+        <span class="dot" aria-hidden="true"></span>
+        <span class="file">decision journal · agent=cos-inbox</span>
+        <div class="rec-ctl"><button type="button" data-zk-replay>↻ replay</button></div>
+      </div>
+      <div class="rec-log vd-log" data-zk-decisions role="log" aria-live="off" aria-label="Policy decisions"></div>
+      <p class="rec-out vd-note" data-zk-hint>recording…</p>
+    </div>
+
+    <div class="rec vd-col">
+      <div class="rec-hd">
+        <span class="gn">2</span>
+        <span class="file">prove — zkVM, offline</span>
+      </div>
+      <div class="rec-log vd-log" data-zk-prove role="log" aria-live="off" aria-label="Proof generation steps"></div>
+      <p class="rec-out vd-note" data-zk-artifact>waiting for the run to finish…</p>
+    </div>
+
+    <div class="rec vd-col">
+      <div class="rec-hd">
+        <span class="gn">3</span>
+        <span class="file">verify — no policy access</span>
+      </div>
+      <div class="rec-log vd-log" data-zk-verify role="log" aria-live="off" aria-label="Verification steps"></div>
+      <p class="rec-out vd-note" data-zk-verdict>waiting for a proof…</p>
+    </div>
+  </div>
+  <p class="rec-cap">The policy itself never appears above — only a commitment to it. That's the
+  one thing this rung can do that the shipped chain cannot: prove a decision matched a policy
+  without revealing the policy. Everything about <em>when</em> it ships is real: gated on a
+  named counterparty whose verifier must not see the policy, because until then native replay
+  gives the same assurance for free.</p>
+
+  <h2>The verifier's experience, end state</h2>
+  <p>
+    Whoever is checking — the operator, or someone auditing on their behalf — gets an
+    <b>audit packet</b> per agent per period: chain segments, anchors, the decision journal or its commitments, and — where the
+    zk rungs have landed — replay proofs. Verification is offline and fast: check the chain,
+    check the anchors against the registry, check the proof. Milliseconds per packet, no trust
+    in the host that produced it, and a written statement of exactly which properties were
+    just verified.
+  </p>
+  <p class="mut">
+    That last artifact — the written statement of what was verified — is the whole point.
+    Novel cryptography is easy to be impressed by and hard to rely on; a narrow statement you
+    can actually defend is worth more.
+  </p>
+
+  <div class="next-row">
+    <a class="btn" href="thesis.html">← The agentOS thesis</a>
+    <a class="btn" href="architecture.html">Open the runtime1 schematic</a>
+    <span class="btn soon-btn" title="the repository is not public yet">GitHub<em>soon</em></span>
+  </div>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
